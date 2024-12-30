@@ -1,24 +1,5 @@
 <?php
 
-/**
- * PHPMailer - PHP email creation and transport class.
- * PHP Version 5.5.
- *
- * @see       https://github.com/PHPMailer/PHPMailer/ The PHPMailer GitHub project
- *
- * @author    Marcus Bointon (Synchro/coolbru) <phpmailer@synchromedia.co.uk>
- * @author    Jim Jagielski (jimjag) <jimjag@gmail.com>
- * @author    Andy Prevost (codeworxtech) <codeworxtech@users.sourceforge.net>
- * @author    Brent R. Matzelle (original founder)
- * @copyright 2012 - 2020 Marcus Bointon
- * @copyright 2010 - 2012 Jim Jagielski
- * @copyright 2004 - 2009 Andy Prevost
- * @license   https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html GNU Lesser General Public License
- * @note      This program is distributed in the hope that it will be useful - WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.
- */
-
 namespace PHPMailer\PHPMailer;
 
 use League\OAuth2\Client\Grant\RefreshToken;
@@ -30,8 +11,6 @@ use League\OAuth2\Client\Token\AccessToken;
  * Uses the oauth2-client package from the League of Extraordinary Packages.
  *
  * @see     https://oauth2-client.thephpleague.com
- *
- * @author  Marcus Bointon (Synchro/coolbru) <phpmailer@synchromedia.co.uk>
  */
 class OAuth implements OAuthTokenProvider
 {
@@ -40,14 +19,14 @@ class OAuth implements OAuthTokenProvider
      *
      * @var AbstractProvider
      */
-    protected $provider;
+    protected ?AbstractProvider $provider = null;
 
     /**
      * The current OAuth access token.
      *
-     * @var AccessToken
+     * @var AccessToken|null
      */
-    protected $oauthToken;
+    protected ?AccessToken $oauthToken = null;
 
     /**
      * The user's email address, usually used as the login ID
@@ -55,38 +34,38 @@ class OAuth implements OAuthTokenProvider
      *
      * @var string
      */
-    protected $oauthUserEmail = '';
+    protected string $oauthUserEmail;
 
     /**
      * The client secret, generated in the app definition of the service you're connecting to.
      *
      * @var string
      */
-    protected $oauthClientSecret = '';
+    protected string $oauthClientSecret;
 
     /**
      * The client ID, generated in the app definition of the service you're connecting to.
      *
      * @var string
      */
-    protected $oauthClientId = '';
+    protected string $oauthClientId;
 
     /**
      * The refresh token, used to obtain new AccessTokens.
      *
      * @var string
      */
-    protected $oauthRefreshToken = '';
+    protected string $oauthRefreshToken;
 
     /**
      * OAuth constructor.
      *
-     * @param array $options Associative array containing
-     *                       `provider`, `userName`, `clientSecret`, `clientId` and `refreshToken` elements
+     * @param AbstractProvider $provider OAuth provider instance
+     * @param array $options Associative array containing `userName`, `clientSecret`, `clientId`, and `refreshToken`
      */
-    public function __construct($options)
+    public function __construct(AbstractProvider $provider, array $options)
     {
-        $this->provider = $options['provider'];
+        $this->provider = $provider;
         $this->oauthUserEmail = $options['userName'];
         $this->oauthClientSecret = $options['clientSecret'];
         $this->oauthClientId = $options['clientId'];
@@ -94,26 +73,59 @@ class OAuth implements OAuthTokenProvider
     }
 
     /**
+     * Check if the current token is valid (exists and not expired).
+     *
+     * @return bool
+     */
+    protected function isTokenValid(): bool
+    {
+        return $this->oauthToken !== null && !$this->oauthToken->hasExpired();
+    }
+
+    /**
+     * Get the OAuth provider instance.
+     *
+     * @return AbstractProvider
+     */
+    protected function getProvider(): AbstractProvider
+    {
+        return $this->provider;
+    }
+
+    /**
      * Get a new RefreshToken.
      *
      * @return RefreshToken
      */
-    protected function getGrant()
+    protected function getGrant(): RefreshToken
     {
         return new RefreshToken();
     }
 
     /**
-     * Get a new AccessToken.
+     * Get a new AccessToken with retry logic.
      *
+     * @param int $maxRetries Maximum number of retries
      * @return AccessToken
+     * @throws \RuntimeException If token retrieval fails after retries
      */
-    protected function getToken()
+    protected function getTokenWithRetry(int $maxRetries = 3): AccessToken
     {
-        return $this->provider->getAccessToken(
-            $this->getGrant(),
-            ['refresh_token' => $this->oauthRefreshToken]
-        );
+        $retries = 0;
+        do {
+            try {
+                return $this->getProvider()->getAccessToken(
+                    $this->getGrant(),
+                    ['refresh_token' => $this->oauthRefreshToken]
+                );
+            } catch (\Exception $e) {
+                $retries++;
+                if ($retries >= $maxRetries) {
+                    throw new \RuntimeException('Failed to retrieve access token after retries.', 0, $e);
+                }
+                sleep(pow(2, $retries)); // Exponential backoff
+            }
+        } while ($retries < $maxRetries);
     }
 
     /**
@@ -121,19 +133,16 @@ class OAuth implements OAuthTokenProvider
      *
      * @return string
      */
-    public function getOauth64()
+    public function getOauth64(): string
     {
-        //Get a new token if it's not available or has expired
-        if (null === $this->oauthToken || $this->oauthToken->hasExpired()) {
-            $this->oauthToken = $this->getToken();
+        if (!$this->isTokenValid()) {
+            $this->oauthToken = $this->getTokenWithRetry();
         }
 
-        return base64_encode(
-            'user=' .
-            $this->oauthUserEmail .
-            "\001auth=Bearer " .
-            $this->oauthToken .
-            "\001\001"
-        );
+        return base64_encode(sprintf(
+            "user=%s\001auth=Bearer %s\001\001",
+            $this->oauthUserEmail,
+            $this->oauthToken->getToken()
+        ));
     }
 }
